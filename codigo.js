@@ -3,7 +3,39 @@
 // ==============================================
 const SUPABASE_URL = "https://krexhlskqyyoltuenmgy.supabase.co";
 const SUPABASE_KEY = "sb_publishable_l57Ekm_BMXOIcy27niKuNg_hkzYhjP4";
-const db = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+// Si la sesión venció (pasa en tablets que "duermen" la app o tienen la hora desfasada),
+// se renueva sola y se repite la petición, en vez de mostrar "JWT expired".
+let renovando = null;
+async function fetchConRenovacion(url, opciones = {}) {
+  const res = await fetch(url, opciones);
+  const u = String(url);
+  if (res.status !== 401 || u.includes("/auth/v1/")) return res;
+
+  let texto = "";
+  try { texto = await res.clone().text(); } catch (_) {}
+  if (!/jwt|token/i.test(texto) || !/expired|invalid/i.test(texto)) return res;
+
+  try {
+    renovando ||= db.auth.refreshSession().finally(() => { renovando = null; });
+    const { data, error } = await renovando;
+    if (error || !data?.session) return res;
+    const headers = new Headers(opciones.headers || {});
+    headers.set("Authorization", `Bearer ${data.session.access_token}`);
+    return fetch(url, { ...opciones, headers });
+  } catch (_) {
+    return res;
+  }
+}
+
+const db = supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {
+  global: { fetch: fetchConRenovacion },
+  auth: { persistSession: true, autoRefreshToken: true }
+});
+
+// Al volver a la app (después de bloquear la tablet o cambiar de app), revisa la sesión
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") db.auth.getSession().catch(() => {});
+});
 
 // La clave de Gemini YA NO va aquí: vive como "secret" en la Edge Function "barry-ia" de Supabase.
 const FUNCION_IA = "barry-ia";
@@ -67,6 +99,7 @@ function abrirTab(idSeccion) {
   if (idSeccion === "seccionCatalogo") { $("codigoInput").focus(); cargarListaCatalogo(); }
   if (idSeccion === "seccionPrecios") { cargarListaProductos(); cargarFeedPrecios(); }
   if (idSeccion === "seccionReporte") cargarReporte();
+  if (idSeccion === "seccionProveedores") cargarPanelProveedores();
 }
 
 // ==============================================
@@ -107,7 +140,8 @@ async function agregarProductoPorCodigo(code) {
     codigo: prod.codigo_barras,
     nombre: prod.nombre,
     precio: parseFloat(prod.precio_venta),
-    costo: parseFloat(prod.costo_compra) || 0
+    costo: parseFloat(prod.costo_compra) || 0,
+    proveedor_id: prod.proveedor_id ?? null
   });
 
   scanStatus.innerHTML = `<span class="text-success fw-bold">Agregado: ${esc(prod.nombre)}</span>`;
@@ -209,7 +243,8 @@ btnCobrar.addEventListener("click", async () => {
       cantidad: item.cantidad,
       precio_unitario: item.precio,
       costo_unitario: item.costo,
-      subtotal: item.precio * item.cantidad
+      subtotal: item.precio * item.cantidad,
+      proveedor_id: item.proveedor_id ?? null
     })));
     if (errDet) throw errDet;
 
@@ -479,11 +514,31 @@ let currentFotoUrl = "";
 let html5QrCode = null;
 previewFoto.src = FOTO_VACIA;
 
-async function cargarProveedores() {
-  const { data } = await db.from("proveedores").select("id, nombre").order("nombre");
-  proveedorSelect.innerHTML = '<option value="">-- General --</option>' +
-    (data || []).map(p => `<option value="${p.id}">${esc(p.nombre)}</option>`).join("");
+// Lista de proveedores (se usa en Catálogo, Proveedores y Faltantes)
+let proveedoresCache = [];
+const idProv = (v) => (v === "" || v == null) ? null : (/^\d+$/.test(String(v)) ? Number(v) : v);
+const nombreProv = (id) => proveedoresCache.find(p => String(p.id) === String(id))?.nombre || "";
+
+function opcionesProveedor(seleccionado, textoVacio = "-- General --") {
+  return `<option value="">${textoVacio}</option>` + proveedoresCache.map(p =>
+    `<option value="${esc(p.id)}" ${String(p.id) === String(seleccionado ?? "") ? "selected" : ""}>${esc(p.nombre)}</option>`).join("");
 }
+
+async function cargarProveedores() {
+  const { data } = await db.from("proveedores").select("*").order("nombre");
+  proveedoresCache = (data || []).filter(p => p.activo !== false);
+  const actual = proveedorSelect.value;
+  proveedorSelect.innerHTML = opcionesProveedor(actual);
+  const filtro = $("filtroProveedorCat"), fActual = filtro.value;
+  filtro.innerHTML = opcionesProveedor(fActual, "Todos los proveedores") + `<option value="__sin" ${fActual === "__sin" ? "selected" : ""}>Sin proveedor</option>`;
+  return proveedoresCache;
+}
+
+// Botones que llevan a otra pestaña (ej. el "+" junto a Proveedor en Catálogo)
+document.addEventListener("click", (e) => {
+  const b = e.target.closest("[data-ir-tab]");
+  if (b) { e.preventDefault(); abrirTab(b.dataset.irTab); }
+});
 
 function mostrarMargen() {
   const c = parseFloat(costoInput.value), p = parseFloat(precioInput.value);
@@ -559,7 +614,7 @@ btnGuardarProd.addEventListener("click", async () => {
     precio_venta: precio,
     stock_actual: parseFloat(stockInput.value) || 0,
     stock_minimo: parseFloat(stockMinInput.value) || 0,
-    proveedor_id: proveedorSelect.value ? parseInt(proveedorSelect.value) : null,
+    proveedor_id: idProv(proveedorSelect.value),
     foto_url: currentFotoUrl,
     updated_at: new Date().toISOString()
   });
@@ -609,6 +664,9 @@ function renderListaCatalogo() {
     const c = +p.costo_compra || 0, pr = +p.precio_venta || 0;
     return c > 0 && (pr / c - 1) < 0.15;
   });
+  const fProv = $("filtroProveedorCat").value;
+  if (fProv === "__sin") lista = lista.filter(p => p.proveedor_id == null);
+  else if (fProv) lista = lista.filter(p => String(p.proveedor_id) === fProv);
 
   $("contadorProductos").textContent = lista.length === productosLista.length
     ? productosLista.length : `${lista.length} de ${productosLista.length}`;
@@ -629,6 +687,7 @@ function renderListaCatalogo() {
         <td>
           <div class="fw-semibold">${esc(p.nombre)}</div>
           <div class="small text-muted font-monospace">${cod}</div>
+          <select class="form-select form-select-sm edit-prov" data-codigo="${cod}" title="Proveedor">${opcionesProveedor(p.proveedor_id, "Sin proveedor")}</select>
         </td>
         <td class="text-end text-muted">${dinero(costo)}</td>
         <td class="text-end">
@@ -648,6 +707,24 @@ function renderListaCatalogo() {
 
 $("buscarProducto").addEventListener("input", renderListaCatalogo);
 $("filtroProductos").addEventListener("change", renderListaCatalogo);
+$("filtroProveedorCat").addEventListener("change", renderListaCatalogo);
+
+// Cambiar el proveedor de un producto directo en la lista
+tablaProductos.addEventListener("change", async (e) => {
+  const el = e.target;
+  if (!el.classList.contains("edit-prov")) return;
+  const nuevo = idProv(el.value);
+  el.disabled = true;
+  const { error } = await db.from("productos")
+    .update({ proveedor_id: nuevo, updated_at: new Date().toISOString() })
+    .eq("codigo_barras", el.dataset.codigo);
+  el.disabled = false;
+  if (error) { alert("No se guardó: " + error.message); renderListaCatalogo(); return; }
+  const p = productosLista.find(x => x.codigo_barras === el.dataset.codigo);
+  if (p) p.proveedor_id = nuevo;
+  el.classList.add("is-valid");
+  setTimeout(() => el.classList.remove("is-valid"), 900);
+});
 
 // Edición rápida de precio y stock directo en la tabla
 tablaProductos.addEventListener("change", async (e) => {
@@ -760,9 +837,12 @@ $("btnGenerarFaltantes").addEventListener("click", async () => {
     <div class="text-center small mb-2">Basado en ventas de ${dias} días</div>`;
   faltantesTexto = `*Pedido BarryStore* (${fecha})\n`;
 
+  if (!proveedoresCache.length) await cargarProveedores();
   for (const [prov, items] of Object.entries(grupos)) {
-    html += `<h6 class="fw-bold">${esc(prov)}</h6><table class="w-100 small">`;
-    faltantesTexto += `\n*${prov}*\n`;
+    const info = proveedoresCache.find(p => p.nombre === prov);
+    const cuando = info ? textoDias(info.dias_visita) : "";
+    html += `<h6 class="fw-bold">${esc(prov)}${cuando ? `<div class="fw-normal text-secondary" style="font-size:.75rem">Pasa: ${esc(cuando)}</div>` : ""}</h6><table class="w-100 small">`;
+    faltantesTexto += `\n*${prov}*${cuando ? ` (pasa ${cuando})` : ""}\n`;
     items.forEach(f => {
       html += `<tr><td>☐ ${esc(f.nombre)}<div class="text-muted" style="font-size:.75rem">hay ${f.stock_actual} · vendió ${f.vendidos}</div></td>
                <td class="text-end fw-bold align-top">${f.pedir} pz</td></tr>`;
@@ -1089,6 +1169,7 @@ function pintarReporte(a, b, r) {
 
   pintarGrafica(a.serie || [], r);
   pintarTop(a.top || []);
+  pintarPorProveedor(a.proveedores);
   pintarTickets(a.ultimas || [], r.agrupar === "dia");
 }
 
@@ -1167,10 +1248,10 @@ function pintarTickets(lista, conFecha) {
 // ==============================================
 // 8. CARRITO: agregar (junta piezas iguales)
 // ==============================================
-function agregarItem({ codigo, nombre, precio, costo }) {
+function agregarItem({ codigo, nombre, precio, costo, proveedor_id = null }) {
   const item = carrito.find(i => i.codigo === codigo && i.precio === precio);
   if (item) item.cantidad += 1;
-  else carrito.push({ codigo, nombre, precio, costo: costo || 0, cantidad: 1 });
+  else carrito.push({ codigo, nombre, precio, costo: costo || 0, proveedor_id, cantidad: 1 });
   actualizarVistaCarrito();
 }
 
@@ -1377,3 +1458,216 @@ $("btnBorrarRapido").addEventListener("click", async () => {
   cerrarFormRapido();
   cargarRapidos();
 });
+
+// ==============================================
+// 11. PROVEEDORES
+// ==============================================
+const DIAS_CORTOS = ["Dom", "Lun", "Mar", "Mié", "Jue", "Vie", "Sáb"];
+const DIAS_LARGOS = ["domingo", "lunes", "martes", "miércoles", "jueves", "viernes", "sábado"];
+const ORDEN_DIAS = [1, 2, 3, 4, 5, 6, 0]; // semana de lunes a domingo
+let provEnEdicion = null;
+let diasSeleccionados = new Set();
+
+function textoDias(dias) {
+  const d = (dias || []).map(Number);
+  if (!d.length) return "";
+  if (d.length === 7) return "diario";
+  return ORDEN_DIAS.filter(x => d.includes(x)).map(x => DIAS_LARGOS[x]).join(", ");
+}
+
+function pintarChipsDias() {
+  $("provDias").innerHTML = ORDEN_DIAS.map(d =>
+    `<button type="button" class="btn btn-sm btn-outline-primary dia-chip ${diasSeleccionados.has(d) ? "activo" : ""}" data-dia="${d}">${DIAS_CORTOS[d]}</button>`).join("");
+}
+$("provDias").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-dia]");
+  if (!b) return;
+  const d = +b.dataset.dia;
+  diasSeleccionados.has(d) ? diasSeleccionados.delete(d) : diasSeleccionados.add(d);
+  pintarChipsDias();
+});
+
+function limpiarFormProv() {
+  provEnEdicion = null;
+  ["provNombre", "provContacto", "provTelefono", "provHorario", "provFrecuencia", "provPago", "provNotas"].forEach(id => $(id).value = "");
+  diasSeleccionados = new Set();
+  pintarChipsDias();
+  $("tituloFormProv").innerHTML = `<i class="bi bi-truck me-2 text-primary"></i>Nuevo proveedor`;
+  $("btnBorrarProv").classList.add("d-none");
+  $("provStatus").textContent = "";
+  document.querySelectorAll(".prov-card.editando").forEach(c => c.classList.remove("editando"));
+}
+$("btnNuevoProv").addEventListener("click", () => { limpiarFormProv(); $("provNombre").focus(); });
+
+window.editarProveedor = function (id) {
+  const p = proveedoresCache.find(x => String(x.id) === String(id));
+  if (!p) return;
+  limpiarFormProv();
+  provEnEdicion = p;
+  $("provNombre").value = p.nombre || "";
+  $("provContacto").value = p.contacto || "";
+  $("provTelefono").value = p.telefono || "";
+  $("provHorario").value = p.horario || "";
+  $("provFrecuencia").value = p.frecuencia || "";
+  $("provPago").value = p.pago || "";
+  $("provNotas").value = p.notas || "";
+  diasSeleccionados = new Set((p.dias_visita || []).map(Number));
+  pintarChipsDias();
+  $("tituloFormProv").innerHTML = `<i class="bi bi-pencil me-2 text-primary"></i>Editar proveedor`;
+  $("btnBorrarProv").classList.remove("d-none");
+  document.querySelector(`.prov-card[data-id="${CSS.escape(String(id))}"]`)?.classList.add("editando");
+  $("formProveedorCol").scrollIntoView({ behavior: "smooth", block: "start" });
+};
+
+$("formProveedor").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const nombre = $("provNombre").value.trim();
+  if (!nombre) { $("provNombre").focus(); return; }
+  const repetido = proveedoresCache.find(p => p.nombre.trim().toLowerCase() === nombre.toLowerCase() && p !== provEnEdicion);
+  if (repetido && !confirm(`Ya existe un proveedor llamado "${repetido.nombre}". ¿Guardar otro igual?`)) return;
+
+  const datos = {
+    nombre,
+    contacto: $("provContacto").value.trim() || null,
+    telefono: $("provTelefono").value.trim() || null,
+    dias_visita: [...diasSeleccionados].sort(),
+    horario: $("provHorario").value.trim() || null,
+    frecuencia: $("provFrecuencia").value.trim() || null,
+    pago: $("provPago").value.trim() || null,
+    notas: $("provNotas").value.trim() || null,
+    activo: true
+  };
+
+  const btn = $("btnGuardarProv");
+  btn.disabled = true;
+  const { error } = provEnEdicion
+    ? await db.from("proveedores").update(datos).eq("id", provEnEdicion.id)
+    : await db.from("proveedores").insert(datos);
+  btn.disabled = false;
+
+  if (error) {
+    $("provStatus").innerHTML = `<span class="text-danger fw-bold">No se guardó: ${esc(error.message)}${/column/i.test(error.message) ? " — ¿ya corriste supabase_proveedores.sql?" : ""}</span>`;
+    return;
+  }
+  limpiarFormProv();
+  $("provStatus").innerHTML = `<span class="text-success fw-bold"><i class="bi bi-check2-all"></i> Guardado.</span>`;
+  cargarPanelProveedores();
+});
+
+$("btnBorrarProv").addEventListener("click", async () => {
+  const p = provEnEdicion;
+  if (!p) return;
+  const n = conteoProductosProv[String(p.id)] || 0;
+  if (!confirm(`¿Eliminar a "${p.nombre}"?` + (n ? `\n\nSus ${n} producto(s) se quedan en el catálogo, pero "Sin proveedor".` : "") +
+    `\n\nLas ventas pasadas siguen contando para ${p.nombre} en los reportes.`)) return;
+
+  // No se borra del todo: se esconde, para que el historial de ventas conserve su nombre
+  await db.from("productos").update({ proveedor_id: null }).eq("proveedor_id", p.id);
+  const { error } = await db.from("proveedores").update({ activo: false }).eq("id", p.id);
+  if (error) { alert("No se pudo eliminar: " + error.message); return; }
+  limpiarFormProv();
+  cargarPanelProveedores();
+});
+
+let conteoProductosProv = {};
+
+async function cargarPanelProveedores() {
+  if (!provEnEdicion) pintarChipsDias();
+  const [lista, { data: prods }] = await Promise.all([
+    cargarProveedores(),
+    db.from("productos").select("proveedor_id, es_rapido")
+  ]);
+  conteoProductosProv = {};
+  let sinProv = 0;
+  (prods || []).forEach(p => {
+    if (p.es_rapido) return;
+    if (p.proveedor_id == null) sinProv++;
+    else conteoProductosProv[String(p.proveedor_id)] = (conteoProductosProv[String(p.proveedor_id)] || 0) + 1;
+  });
+
+  // Quién pasa hoy y mañana
+  const hoy = new Date().getDay(), manana = (hoy + 1) % 7;
+  const pasan = (d) => lista.filter(p => (p.dias_visita || []).map(Number).includes(d)).map(p => p.nombre);
+  const hoyL = pasan(hoy), mananaL = pasan(manana);
+  $("provHoy").innerHTML = (hoyL.length || mananaL.length) ? `
+    <div class="card p-3" style="background: var(--miel-suave);">
+      ${hoyL.length ? `<div><b>Hoy (${DIAS_LARGOS[hoy]}) pasan:</b> ${hoyL.map(esc).join(", ")}</div>` : ""}
+      ${mananaL.length ? `<div class="small text-secondary mt-1"><b>Mañana:</b> ${mananaL.map(esc).join(", ")}</div>` : ""}
+      <div class="small mt-2"><a href="#" data-ir-tab="seccionFaltantes">Ver qué les falta pedir →</a></div>
+    </div>` : "";
+
+  if (!lista.length) {
+    $("listaProveedores").innerHTML = `<div class="card p-4 text-center vacio"><svg class="abeja-xl mx-auto"><use href="#abeja"/></svg>
+      <div>Aún no hay proveedores. Agrega el primero con el formulario.</div></div>`;
+    return;
+  }
+
+  $("listaProveedores").innerHTML = lista.map(p => {
+    const dias = (p.dias_visita || []).map(Number);
+    const tel = (p.telefono || "").replace(/\D/g, "");
+    const telWa = tel.length === 10 ? "52" + tel : tel;
+    const n = conteoProductosProv[String(p.id)] || 0;
+    const detalles = [
+      p.horario && `<i class="bi bi-clock me-1"></i>${esc(p.horario)}`,
+      p.frecuencia && `<i class="bi bi-arrow-repeat me-1"></i>${esc(p.frecuencia)}`,
+      p.pago && `<i class="bi bi-cash-coin me-1"></i>${esc(p.pago)}`
+    ].filter(Boolean).join(" · ");
+    return `
+      <div class="card mb-2 prov-card ${provEnEdicion && String(provEnEdicion.id) === String(p.id) ? "editando" : ""}" data-id="${esc(p.id)}">
+        <div class="card-body p-3">
+          <div class="d-flex justify-content-between align-items-start gap-2">
+            <div>
+              <div class="fw-bold fs-5">${esc(p.nombre)} ${dias.includes(hoy) ? '<span class="badge total-chip ms-1">Pasa hoy</span>' : ""}</div>
+              ${p.contacto ? `<div class="small text-secondary"><i class="bi bi-person me-1"></i>${esc(p.contacto)}</div>` : ""}
+            </div>
+            <button class="btn btn-sm btn-outline-primary" onclick="editarProveedor('${esc(p.id)}')"><i class="bi bi-pencil"></i></button>
+          </div>
+          <div class="dias mt-2">${ORDEN_DIAS.map(d => `<span class="${dias.includes(d) ? "si" : ""} ${d === hoy ? "hoy" : ""}">${DIAS_CORTOS[d]}</span>`).join("")}</div>
+          ${detalles ? `<div class="small mt-1">${detalles}</div>` : ""}
+          ${p.notas ? `<div class="small text-secondary mt-1"><i class="bi bi-sticky me-1"></i>${esc(p.notas)}</div>` : ""}
+          <div class="d-flex flex-wrap gap-2 mt-2">
+            ${tel ? `<a class="btn btn-sm btn-outline-primary" href="tel:${tel}"><i class="bi bi-telephone me-1"></i>Llamar</a>
+                     <a class="btn btn-sm btn-outline-primary" href="https://wa.me/${telWa}" target="_blank" rel="noopener"><i class="bi bi-whatsapp me-1"></i>WhatsApp</a>` : ""}
+            <button class="btn btn-sm btn-outline-primary" onclick="verProductosDeProveedor('${esc(p.id)}')"><i class="bi bi-box-seam me-1"></i>${n} producto${n === 1 ? "" : "s"}</button>
+          </div>
+        </div>
+      </div>`;
+  }).join("") + (sinProv ? `<div class="small text-secondary mt-2"><i class="bi bi-info-circle me-1"></i>
+      Hay <a href="#" onclick="verProductosDeProveedor('__sin'); return false;">${sinProv} producto(s) sin proveedor</a>.
+      Asígnales uno para que el reporte de ventas te diga cuánto apartar para cada quien.</div>` : "");
+}
+
+window.verProductosDeProveedor = async function (id) {
+  abrirTab("seccionCatalogo");
+  $("filtroProductos").value = "todos";
+  $("buscarProducto").value = "";
+  $("filtroProveedorCat").value = String(id);
+  renderListaCatalogo();
+};
+
+// ---------- Reporte: dinero por proveedor ----------
+function pintarPorProveedor(lista) {
+  const tb = $("tablaPorProveedor");
+  if (!Array.isArray(lista)) {
+    tb.innerHTML = `<tr><td colspan="5" class="small text-secondary">Corre <b>supabase_proveedores.sql</b> para ver esta tabla.</td></tr>`;
+    return;
+  }
+  if (!lista.length) {
+    tb.innerHTML = `<tr><td colspan="5" class="text-center text-secondary py-3">Sin ventas en este periodo.</td></tr>`;
+    return;
+  }
+  const t = lista.reduce((a, x) => ({ p: a.p + +x.piezas, v: a.v + +x.vendido, c: a.c + +x.costo, u: a.u + +x.utilidad }), { p: 0, v: 0, c: 0, u: 0 });
+  tb.innerHTML = lista.map(x => `
+    <tr>
+      <td class="fw-semibold">${esc(x.nombre)}
+        ${+x.sin_costo ? `<div class="small text-danger" style="font-size:.72rem">${x.sin_costo} producto(s) sin costo</div>` : ""}</td>
+      <td class="text-center">${+x.piezas}</td>
+      <td class="text-end">${dinero(x.vendido)}</td>
+      <td class="text-end fw-bold">${dinero(x.costo)}</td>
+      <td class="text-end fw-bold text-success">${dinero(x.utilidad)}</td>
+    </tr>`).join("") + (lista.length > 1 ? `
+    <tr class="fila-total">
+      <td>Total</td><td class="text-center">${t.p}</td><td class="text-end">${dinero(t.v)}</td>
+      <td class="text-end">${dinero(t.c)}</td><td class="text-end text-success">${dinero(t.u)}</td>
+    </tr>` : "");
+}
