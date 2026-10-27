@@ -138,6 +138,16 @@
     .ticket-cancelado { opacity: .6; }
     .ticket-cancelado b { text-decoration: line-through; }
 
+    /* Proveedores */
+    .dia-chip { min-width: 46px; border-radius: 999px !important; }
+    .dia-chip.activo { background: var(--miel); border-color: var(--miel); color: var(--tinta); }
+    .prov-card .dias span { display: inline-block; font-size: .72rem; font-weight: 800; padding: 2px 7px; border-radius: 999px; background: #F4EEDD; color: #A89C84; margin: 0 2px 2px 0; }
+    .prov-card .dias span.si { background: var(--miel); color: var(--tinta); }
+    .prov-card .dias span.hoy { outline: 2px solid var(--tinta); }
+    .prov-card.editando { outline: 3px solid var(--miel); }
+    .edit-prov { font-size: .78rem; padding-top: 1px; padding-bottom: 1px; max-width: 170px; margin-top: 3px; }
+    .fila-total td { border-top: 2px solid var(--tinta) !important; font-weight: 900; }
+
     /* Reporte de ventas */
     .kpi-tit { font-size: .78rem; text-transform: uppercase; letter-spacing: .06em; font-weight: 800; color: var(--tinta-suave); }
     .kpi-num { font-size: 1.9rem; font-weight: 900; line-height: 1.15; margin: .15rem 0; }
@@ -234,6 +244,7 @@
         <button data-tab="seccionReporte" class="tab-btn btn btn-outline-primary fw-bold px-3"><i class="bi bi-bar-chart-line me-1"></i> Ventas</button>
         <button data-tab="seccionRecepcion" class="tab-btn btn btn-outline-primary fw-bold px-3"><i class="bi bi-receipt-cutoff me-1"></i> Recibir pedido</button>
         <button data-tab="seccionCatalogo" class="tab-btn btn btn-outline-primary fw-bold px-3"><i class="bi bi-boxes me-1"></i> Catálogo</button>
+        <button data-tab="seccionProveedores" class="tab-btn btn btn-outline-primary fw-bold px-3"><i class="bi bi-truck me-1"></i> Proveedores</button>
         <button data-tab="seccionFaltantes" class="tab-btn btn btn-outline-primary fw-bold px-3"><i class="bi bi-clipboard-check me-1"></i> Faltantes</button>
         <button data-tab="seccionPrecios" class="tab-btn btn btn-outline-primary fw-bold px-3"><i class="bi bi-graph-up-arrow me-1"></i> Precios</button>
         <button id="btnSalir" class="btn btn-link text-secondary px-2" title="Cerrar sesión"><i class="bi bi-box-arrow-right fs-5"></i></button>
@@ -423,6 +434,26 @@
         </div>
       </div>
 
+      <!-- DINERO POR PROVEEDOR -->
+      <div class="card mb-3">
+        <div class="card-body p-3">
+          <h6 class="fw-bold mb-1"><i class="bi bi-truck me-1 text-primary"></i>Por proveedor</h6>
+          <div class="small text-secondary mb-2">
+            <b>Apartar</b> es lo que costó la mercancía que se vendió: ese dinero es para volver a pagarle a ese proveedor.
+            <b>Te queda</b> es la ganancia de la tienda.
+          </div>
+          <div class="table-responsive">
+            <table class="table table-sm align-middle mb-0">
+              <thead class="table-light"><tr>
+                <th>Proveedor</th><th class="text-center">Pzas</th><th class="text-end">Vendido</th>
+                <th class="text-end">Apartar</th><th class="text-end">Te queda</th>
+              </tr></thead>
+              <tbody id="tablaPorProveedor"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
       <div class="row g-3">
         <div class="col-lg-6">
           <div class="card h-100">
@@ -556,7 +587,10 @@
               <input type="number" id="stockMinInput" class="form-control form-control-lg" value="5" />
             </div>
             <div class="col-4">
-              <label class="form-label fw-bold">Proveedor</label>
+              <label class="form-label fw-bold d-flex justify-content-between align-items-center">
+                Proveedor
+                <button type="button" class="btn btn-link btn-sm p-0" data-ir-tab="seccionProveedores" title="Agregar o editar proveedores"><i class="bi bi-plus-circle"></i></button>
+              </label>
               <select id="proveedorSelect" class="form-select form-select-lg">
                 <option value="">Cargando...</option>
               </select>
@@ -580,6 +614,9 @@
                 <option value="todos">Todos</option>
                 <option value="bajo">Stock bajo</option>
                 <option value="sinmargen">Ganancia baja (&lt;15%)</option>
+              </select>
+              <select id="filtroProveedorCat" class="form-select form-select-sm" style="width: auto;">
+                <option value="">Todos los proveedores</option>
               </select>
             </div>
             <input type="search" id="buscarProducto" class="form-control mb-2" placeholder="Buscar por nombre o código..." />
@@ -605,6 +642,72 @@
         </div>
       </div>
      </div>
+    </div>
+
+    <!-- ============================================== -->
+    <!-- PROVEEDORES                                    -->
+    <!-- ============================================== -->
+    <div id="seccionProveedores" class="seccion" style="display: none;">
+      <div class="row g-3">
+        <div class="col-lg-5" id="formProveedorCol">
+          <form id="formProveedor" class="card">
+            <div class="card-body p-4">
+              <div class="d-flex justify-content-between align-items-center mb-3">
+                <h5 class="fw-bold mb-0" id="tituloFormProv"><i class="bi bi-truck me-2 text-primary"></i>Nuevo proveedor</h5>
+                <button type="button" class="btn btn-sm btn-outline-primary" id="btnNuevoProv"><i class="bi bi-plus-lg"></i> Nuevo</button>
+              </div>
+
+              <label class="form-label fw-bold">Nombre del proveedor *</label>
+              <input id="provNombre" class="form-control form-control-lg mb-3" placeholder="Ej. Bimbo, Sabritas, Coca-Cola" required />
+
+              <div class="row g-2 mb-3">
+                <div class="col-6">
+                  <label class="form-label fw-bold small">Quién viene</label>
+                  <input id="provContacto" class="form-control" placeholder="Ej. Don Luis" />
+                </div>
+                <div class="col-6">
+                  <label class="form-label fw-bold small">Teléfono</label>
+                  <input id="provTelefono" type="tel" class="form-control" placeholder="55 1234 5678" />
+                </div>
+              </div>
+
+              <label class="form-label fw-bold small mb-1">¿Qué días pasa?</label>
+              <div class="d-flex flex-wrap gap-1 mb-3" id="provDias"></div>
+
+              <div class="row g-2 mb-3">
+                <div class="col-6">
+                  <label class="form-label fw-bold small">¿A qué hora?</label>
+                  <input id="provHorario" class="form-control" placeholder="Ej. en la mañana" list="sugHorario" />
+                  <datalist id="sugHorario"><option>En la mañana</option><option>Al mediodía</option><option>En la tarde</option><option>Sin hora fija</option></datalist>
+                </div>
+                <div class="col-6">
+                  <label class="form-label fw-bold small">¿Cada cuánto?</label>
+                  <input id="provFrecuencia" class="form-control" placeholder="Ej. cada semana" list="sugFrecuencia" />
+                  <datalist id="sugFrecuencia"><option>Cada semana</option><option>Dos veces por semana</option><option>Cada 15 días</option><option>Cada mes</option><option>Cuando se le llama</option></datalist>
+                </div>
+              </div>
+
+              <label class="form-label fw-bold small">¿Cómo se le paga?</label>
+              <input id="provPago" class="form-control mb-3" placeholder="Ej. de contado" list="sugPago" />
+              <datalist id="sugPago"><option>De contado</option><option>A la siguiente visita</option><option>Cada 15 días</option><option>Transferencia</option></datalist>
+
+              <label class="form-label fw-bold small">Notas</label>
+              <textarea id="provNotas" class="form-control mb-3" rows="2" placeholder="Ej. pedir con un día de anticipación, no trae cambio..."></textarea>
+
+              <div class="d-flex gap-2">
+                <button type="submit" class="btn btn-primary btn-touch flex-grow-1" id="btnGuardarProv"><i class="bi bi-save2-fill me-1"></i> Guardar proveedor</button>
+                <button type="button" class="btn btn-outline-danger btn-touch d-none" id="btnBorrarProv" title="Eliminar"><i class="bi bi-trash"></i></button>
+              </div>
+              <div id="provStatus" class="small mt-2"></div>
+            </div>
+          </form>
+        </div>
+
+        <div class="col-lg-7">
+          <div id="provHoy" class="mb-3"></div>
+          <div id="listaProveedores"><div class="text-secondary">Cargando...</div></div>
+        </div>
+      </div>
     </div>
 
     <!-- ============================================== -->
