@@ -1414,6 +1414,12 @@ function abrirFormRapido(r) {
   $("rapCosto").value = r?.costo_compra ?? "";
   $("rapLibre").checked = !!r?.precio_libre;
   $("rapProveedor").innerHTML = opcionesProveedor(r?.proveedor_id, "Sin proveedor (es mío)");
+  // Vuelve a leer los proveedores por si acabas de crear uno en la pestaña Proveedores
+  cargarProveedores().then(() => {
+    const sel = $("rapProveedor");
+    const actual = sel.value || (r?.proveedor_id ?? "");
+    sel.innerHTML = opcionesProveedor(actual, "Sin proveedor (es mío)");
+  });
   $("btnBorrarRapido").classList.toggle("d-none", !r);
   etiquetasFormRapido();
   $("formRapido").classList.remove("d-none");
