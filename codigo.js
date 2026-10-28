@@ -1654,6 +1654,29 @@ window.verProductosDeProveedor = async function (id) {
 };
 
 // ---------- Reporte: dinero por proveedor ----------
+const provAbiertos = new Set(); // recuerda cuáles abriste aunque cambies de periodo
+
+$("tablaPorProveedor").addEventListener("click", (e) => {
+  const fila = e.target.closest(".fila-prov");
+  if (!fila) return;
+  const grupo = fila.dataset.grupo, nombre = fila.dataset.nombre;
+  const abrir = !provAbiertos.has(nombre);
+  abrir ? provAbiertos.add(nombre) : provAbiertos.delete(nombre);
+  document.querySelectorAll(`#tablaPorProveedor .grupo-${grupo}`).forEach(r => r.classList.toggle("d-none", !abrir));
+  fila.querySelector(".flecha-prov")?.classList.toggle("abierta", abrir);
+});
+
+$("btnAbrirTodosProv").addEventListener("click", () => {
+  const filas = [...document.querySelectorAll("#tablaPorProveedor .fila-prov")];
+  const abrir = filas.some(f => !provAbiertos.has(f.dataset.nombre));
+  filas.forEach(f => {
+    abrir ? provAbiertos.add(f.dataset.nombre) : provAbiertos.delete(f.dataset.nombre);
+    document.querySelectorAll(`#tablaPorProveedor .grupo-${f.dataset.grupo}`).forEach(r => r.classList.toggle("d-none", !abrir));
+    f.querySelector(".flecha-prov")?.classList.toggle("abierta", abrir);
+  });
+  $("btnAbrirTodosProv").innerHTML = abrir ? `<i class="bi bi-arrows-collapse me-1"></i>Cerrar todos` : `<i class="bi bi-arrows-expand me-1"></i>Abrir todos`;
+});
+
 function pintarPorProveedor(lista) {
   const tb = $("tablaPorProveedor");
   if (!Array.isArray(lista)) {
@@ -1665,15 +1688,36 @@ function pintarPorProveedor(lista) {
     return;
   }
   const t = lista.reduce((a, x) => ({ p: a.p + +x.piezas, v: a.v + +x.vendido, c: a.c + +x.costo, u: a.u + +x.utilidad }), { p: 0, v: 0, c: 0, u: 0 });
-  tb.innerHTML = lista.map(x => `
-    <tr>
-      <td class="fw-semibold">${esc(x.nombre)}
+  const conDesglose = lista.some(x => Array.isArray(x.productos));
+  $("btnAbrirTodosProv").classList.toggle("d-none", !conDesglose);
+
+  tb.innerHTML = lista.map((x, i) => {
+    const prods = Array.isArray(x.productos) ? x.productos : [];
+    const abierto = provAbiertos.has(x.nombre);
+    // Renglón del proveedor (se toca para abrir/cerrar)
+    let html = `
+    <tr class="${prods.length ? "fila-prov" : ""}" data-grupo="${i}" data-nombre="${esc(x.nombre)}">
+      <td class="fw-semibold">
+        ${prods.length ? `<i class="bi bi-chevron-right flecha-prov ${abierto ? "abierta" : ""}"></i>` : ""}
+        ${esc(x.nombre)}
+        ${prods.length ? `<span class="text-secondary small fw-normal">· ${prods.length} producto${prods.length === 1 ? "" : "s"}</span>` : ""}
         ${+x.sin_costo ? `<div class="small text-danger" style="font-size:.72rem">${x.sin_costo} producto(s) sin costo</div>` : ""}</td>
       <td class="text-center">${+x.piezas}</td>
       <td class="text-end">${dinero(x.vendido)}</td>
       <td class="text-end fw-bold">${dinero(x.costo)}</td>
       <td class="text-end fw-bold text-success">${dinero(x.utilidad)}</td>
-    </tr>`).join("") + (lista.length > 1 ? `
+    </tr>`;
+    // Sus productos (escondidos hasta que se toca el proveedor)
+    html += prods.map(p => `
+    <tr class="fila-producto grupo-${i} ${abierto ? "" : "d-none"}">
+      <td>${esc(p.nombre)}${p.sin_costo ? ' <span class="badge text-bg-danger" style="font-size:.62rem">sin costo</span>' : ""}</td>
+      <td class="text-center">${+p.piezas}</td>
+      <td class="text-end">${dinero(p.vendido)}</td>
+      <td class="text-end">${dinero(p.costo)}</td>
+      <td class="text-end text-success">${dinero(p.utilidad)}</td>
+    </tr>`).join("");
+    return html;
+  }).join("") + (lista.length > 1 ? `
     <tr class="fila-total">
       <td>Total</td><td class="text-center">${t.p}</td><td class="text-end">${dinero(t.v)}</td>
       <td class="text-end">${dinero(t.c)}</td><td class="text-end text-success">${dinero(t.u)}</td>
