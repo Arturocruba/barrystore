@@ -147,6 +147,12 @@
     .prov-card.editando { outline: 3px solid var(--miel); }
     .edit-prov { font-size: .78rem; padding-top: 1px; padding-bottom: 1px; max-width: 170px; margin-top: 3px; }
     .fila-total td { border-top: 2px solid var(--tinta) !important; font-weight: 900; }
+    .fila-prov { cursor: pointer; }
+    .fila-prov:hover td { background: var(--miel-suave); }
+    .flecha-prov { display: inline-block; font-size: .8rem; color: #C99300; transition: transform .15s; margin-right: 4px; }
+    .flecha-prov.abierta { transform: rotate(90deg); }
+    .fila-producto td { background: #FFFCF3; font-size: .88rem; color: var(--tinta-suave); border-bottom-style: dashed; }
+    .fila-producto td:first-child { padding-left: 2rem; }
 
     /* Reporte de ventas */
     .kpi-tit { font-size: .78rem; text-transform: uppercase; letter-spacing: .06em; font-weight: 800; color: var(--tinta-suave); }
@@ -441,10 +447,13 @@
       <!-- DINERO POR PROVEEDOR -->
       <div class="card mb-3">
         <div class="card-body p-3">
-          <h6 class="fw-bold mb-1"><i class="bi bi-truck me-1 text-primary"></i>Por proveedor</h6>
+          <div class="d-flex justify-content-between align-items-center mb-1 gap-2">
+            <h6 class="fw-bold mb-0"><i class="bi bi-truck me-1 text-primary"></i>Por proveedor <small class="text-secondary fw-normal">(toca uno para ver sus productos)</small></h6>
+            <button type="button" class="btn btn-sm btn-outline-primary d-none" id="btnAbrirTodosProv"><i class="bi bi-arrows-expand me-1"></i>Abrir todos</button>
+          </div>
           <div class="small text-secondary mb-2">
             <b>Apartar</b> es lo que costó la mercancía que se vendió: ese dinero es para volver a pagarle a ese proveedor.
-            <b>Te queda</b> es la ganancia de la tienda.
+            <b>Te queda</b> es la ganancia de la tienda. Toca un proveedor para ver sus productos.
           </div>
           <div class="table-responsive">
             <table class="table table-sm align-middle mb-0">
