@@ -1353,7 +1353,7 @@ $("gridRapidos").addEventListener("click", (e) => {
   if (r.precio_libre) {
     abrirMonto(r);
   } else {
-    agregarItem({ codigo: r.codigo_barras, nombre: r.nombre, precio: +r.precio_venta, costo: +r.costo_compra || 0 });
+    agregarItem({ codigo: r.codigo_barras, nombre: r.nombre, precio: +r.precio_venta, costo: +r.costo_compra || 0, proveedor_id: r.proveedor_id ?? null });
     scanStatus.innerHTML = `<span class="text-success fw-bold">Agregado: ${esc(r.nombre)}</span>`;
     resetFocus(); // para que la pistola siga leyendo códigos
   }
@@ -1386,7 +1386,7 @@ function agregarPorMonto(monto) {
   const r = rapidoMonto;
   // La ganancia se calcula con la proporción costo/precio que pusiste (ej. kilo a $22 que te cuesta $18)
   const proporcion = +r.precio_venta > 0 ? (+r.costo_compra || 0) / +r.precio_venta : 0;
-  agregarItem({ codigo: r.codigo_barras, nombre: `${r.nombre} ($${monto})`, precio: monto, costo: Math.round(monto * proporcion * 100) / 100 });
+  agregarItem({ codigo: r.codigo_barras, nombre: `${r.nombre} ($${monto})`, precio: monto, costo: Math.round(monto * proporcion * 100) / 100, proveedor_id: r.proveedor_id ?? null });
   scanStatus.innerHTML = `<span class="text-success fw-bold">Agregado: ${esc(r.nombre)} por ${dinero(monto)}</span>`;
   cerrarMonto();
   resetFocus();
@@ -1413,6 +1413,7 @@ function abrirFormRapido(r) {
   $("rapPrecio").value = r?.precio_venta ?? "";
   $("rapCosto").value = r?.costo_compra ?? "";
   $("rapLibre").checked = !!r?.precio_libre;
+  $("rapProveedor").innerHTML = opcionesProveedor(r?.proveedor_id, "Sin proveedor (es mío)");
   $("btnBorrarRapido").classList.toggle("d-none", !r);
   etiquetasFormRapido();
   $("formRapido").classList.remove("d-none");
@@ -1433,6 +1434,7 @@ $("formRapido").addEventListener("submit", async (e) => {
     precio_venta: precio,
     costo_compra: parseFloat($("rapCosto").value) || 0,
     precio_libre: $("rapLibre").checked,
+    proveedor_id: idProv($("rapProveedor").value),
     es_rapido: true,
     oculto: false,
     updated_at: new Date().toISOString()
