@@ -649,6 +649,7 @@ async function cargarListaCatalogo() {
     return;
   }
   productosLista = (data || []).filter(p => !p.es_rapido); // los botones sin código se editan desde Caja
+  botonesCatalogo = (data || []).filter(p => p.es_rapido && !p.oculto);
   renderListaCatalogo();
 }
 
@@ -672,7 +673,8 @@ function renderListaCatalogo() {
     ? productosLista.length : `${lista.length} de ${productosLista.length}`;
 
   if (lista.length === 0) {
-    tablaProductos.innerHTML = `<tr><td colspan="6" class="text-center text-muted py-4">${productosLista.length ? "Nada coincide con la búsqueda." : "Aún no hay productos."}</td></tr>`;
+    tablaProductos.innerHTML = `<tr><td colspan="6" class="text-center text-muted py-4">${productosLista.length ? "Nada coincide con la búsqueda." : "Aún no hay productos."}</td></tr>`
+      + filaBotonesDelProveedor(fProv);
     return;
   }
 
@@ -702,7 +704,20 @@ function renderListaCatalogo() {
           <button class="btn btn-sm btn-outline-danger" onclick="borrarProducto('${cod}')" title="Eliminar"><i class="bi bi-trash"></i></button>
         </td>
       </tr>`;
-  }).join("") + (lista.length > 400 ? `<tr><td colspan="6" class="text-center small text-muted">Mostrando 400 de ${lista.length}. Usa el buscador.</td></tr>` : "");
+  }).join("") + (lista.length > 400 ? `<tr><td colspan="6" class="text-center small text-muted">Mostrando 400 de ${lista.length}. Usa el buscador.</td></tr>` : "")
+    + filaBotonesDelProveedor(fProv);
+}
+
+// Cuando filtras por proveedor, también enseña sus botones sin código
+let botonesCatalogo = [];
+function filaBotonesDelProveedor(fProv) {
+  if (!fProv) return "";
+  const lista = botonesCatalogo.filter(b => fProv === "__sin" ? b.proveedor_id == null : String(b.proveedor_id) === fProv);
+  if (!lista.length) return "";
+  return `<tr><td colspan="6" class="small" style="background: var(--miel-suave);">
+    <i class="bi bi-lightning-charge-fill text-primary"></i> <b>Botones sin código${fProv === "__sin" ? " sin proveedor" : " de este proveedor"}:</b>
+    ${lista.map(b => `<button type="button" class="btn btn-sm btn-light border py-0 px-2 ms-1 mb-1" onclick="editarBotonRapido('${esc(b.codigo_barras)}')">${esc(b.icono || "")} ${esc(b.nombre)} · ${b.precio_libre ? "por monto" : dinero(b.precio_venta)}</button>`).join("")}
+  </td></tr>`;
 }
 
 $("buscarProducto").addEventListener("input", renderListaCatalogo);
@@ -1578,17 +1593,35 @@ $("btnBorrarProv").addEventListener("click", async () => {
 });
 
 let conteoProductosProv = {};
+let botonesPorProv = {};
+
+// Abre el botón sin código en la Caja para editarlo
+window.editarBotonRapido = async function (codigo) {
+  abrirTab("seccionVentas");
+  if (!rapidos.length) await cargarRapidos();
+  const r = rapidos.find(x => x.codigo_barras === codigo);
+  if (!r) return;
+  if (!editandoRapidos) $("btnEditarRapidos").click();
+  abrirFormRapido(r);
+  $("formRapido").scrollIntoView({ behavior: "smooth", block: "center" });
+};
 
 async function cargarPanelProveedores() {
   if (!provEnEdicion) pintarChipsDias();
   const [lista, { data: prods }] = await Promise.all([
     cargarProveedores(),
-    db.from("productos").select("proveedor_id, es_rapido")
+    db.from("productos").select("codigo_barras, nombre, icono, proveedor_id, es_rapido, oculto")
   ]);
   conteoProductosProv = {};
+  botonesPorProv = {};
   let sinProv = 0;
   (prods || []).forEach(p => {
-    if (p.es_rapido) return;
+    if (p.es_rapido) {
+      // Los botones sin código también cuentan como productos de su proveedor
+      if (p.oculto || p.proveedor_id == null) return;
+      (botonesPorProv[String(p.proveedor_id)] ||= []).push(p);
+      return;
+    }
     if (p.proveedor_id == null) sinProv++;
     else conteoProductosProv[String(p.proveedor_id)] = (conteoProductosProv[String(p.proveedor_id)] || 0) + 1;
   });
@@ -1636,8 +1669,12 @@ async function cargarPanelProveedores() {
           <div class="d-flex flex-wrap gap-2 mt-2">
             ${tel ? `<a class="btn btn-sm btn-outline-primary" href="tel:${tel}"><i class="bi bi-telephone me-1"></i>Llamar</a>
                      <a class="btn btn-sm btn-outline-primary" href="https://wa.me/${telWa}" target="_blank" rel="noopener"><i class="bi bi-whatsapp me-1"></i>WhatsApp</a>` : ""}
-            <button class="btn btn-sm btn-outline-primary" onclick="verProductosDeProveedor('${esc(p.id)}')"><i class="bi bi-box-seam me-1"></i>${n} producto${n === 1 ? "" : "s"}</button>
+            <button class="btn btn-sm btn-outline-primary" onclick="verProductosDeProveedor('${esc(p.id)}')"><i class="bi bi-box-seam me-1"></i>${n} producto${n === 1 ? "" : "s"} con código</button>
           </div>
+          ${(botonesPorProv[String(p.id)] || []).length ? `
+          <div class="small mt-2"><span class="text-secondary"><i class="bi bi-lightning-charge-fill text-primary"></i> Botones sin código:</span>
+            ${botonesPorProv[String(p.id)].map(b => `<button type="button" class="btn btn-sm btn-light border py-0 px-2 ms-1 mb-1" onclick="editarBotonRapido('${esc(b.codigo_barras)}')">${esc(b.icono || "")} ${esc(b.nombre)}</button>`).join("")}
+          </div>` : ""}
         </div>
       </div>`;
   }).join("") + (sinProv ? `<div class="small text-secondary mt-2"><i class="bi bi-info-circle me-1"></i>
@@ -1656,7 +1693,7 @@ window.verProductosDeProveedor = async function (id) {
 // ---------- Reporte: dinero por proveedor ----------
 const provAbiertos = new Set(); // recuerda cuáles abriste aunque cambies de periodo
 
-$("tablaPorProveedor").addEventListener("click", (e) => {
+$("tablaPorProveedor")?.addEventListener("click", (e) => {
   const fila = e.target.closest(".fila-prov");
   if (!fila) return;
   const grupo = fila.dataset.grupo, nombre = fila.dataset.nombre;
@@ -1666,7 +1703,7 @@ $("tablaPorProveedor").addEventListener("click", (e) => {
   fila.querySelector(".flecha-prov")?.classList.toggle("abierta", abrir);
 });
 
-$("btnAbrirTodosProv").addEventListener("click", () => {
+$("btnAbrirTodosProv")?.addEventListener("click", () => {
   const filas = [...document.querySelectorAll("#tablaPorProveedor .fila-prov")];
   const abrir = filas.some(f => !provAbiertos.has(f.dataset.nombre));
   filas.forEach(f => {
@@ -1674,11 +1711,12 @@ $("btnAbrirTodosProv").addEventListener("click", () => {
     document.querySelectorAll(`#tablaPorProveedor .grupo-${f.dataset.grupo}`).forEach(r => r.classList.toggle("d-none", !abrir));
     f.querySelector(".flecha-prov")?.classList.toggle("abierta", abrir);
   });
-  $("btnAbrirTodosProv").innerHTML = abrir ? `<i class="bi bi-arrows-collapse me-1"></i>Cerrar todos` : `<i class="bi bi-arrows-expand me-1"></i>Abrir todos`;
+  const b = $("btnAbrirTodosProv"); if (b) b.innerHTML = abrir ? `<i class="bi bi-arrows-collapse me-1"></i>Cerrar todos` : `<i class="bi bi-arrows-expand me-1"></i>Abrir todos`;
 });
 
 function pintarPorProveedor(lista) {
   const tb = $("tablaPorProveedor");
+  if (!tb) return; // index.html viejo: no hay tabla donde pintar
   if (!Array.isArray(lista)) {
     tb.innerHTML = `<tr><td colspan="5" class="small text-secondary">Corre <b>supabase_proveedores.sql</b> para ver esta tabla.</td></tr>`;
     return;
@@ -1689,7 +1727,7 @@ function pintarPorProveedor(lista) {
   }
   const t = lista.reduce((a, x) => ({ p: a.p + +x.piezas, v: a.v + +x.vendido, c: a.c + +x.costo, u: a.u + +x.utilidad }), { p: 0, v: 0, c: 0, u: 0 });
   const conDesglose = lista.some(x => Array.isArray(x.productos));
-  $("btnAbrirTodosProv").classList.toggle("d-none", !conDesglose);
+  $("btnAbrirTodosProv")?.classList.toggle("d-none", !conDesglose);
 
   tb.innerHTML = lista.map((x, i) => {
     const prods = Array.isArray(x.productos) ? x.productos : [];
