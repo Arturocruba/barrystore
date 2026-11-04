@@ -122,6 +122,39 @@
     .ticket-papel h6 { border-bottom: 1px dashed #D9C78F; padding-bottom: 4px; margin-top: 14px; }
     .feed-card .tienda-chip { font-size: .8rem; }
 
+    /* Caja: carrito primero */
+    .carrito-scroll { min-height: 260px; max-height: 480px; overflow-y: auto; }
+    .cart-table thead th { position: sticky; top: 0; z-index: 1; }
+    .fila-nueva td { animation: destello 1.2s ease-out; }
+    @keyframes destello { 0% { background: var(--miel-claro); } 100% { background: transparent; } }
+    .fila-sin-precio td { background: #FFF6D6; }
+    .precio-pendiente { width: 92px; margin-left: auto; }
+    .barra-cobro { position: fixed; left: 0; right: 0; bottom: 0; z-index: 1030; background: var(--tinta); color: #fff;
+      display: flex; align-items: center; justify-content: space-between; gap: 12px;
+      padding: 10px 16px calc(10px + env(safe-area-inset-bottom)); box-shadow: 0 -6px 20px -10px rgba(0,0,0,.5); }
+    .barra-cobro #barraTotal { color: var(--miel); }
+    .toast-venta { position: fixed; left: 50%; top: 16px; transform: translateX(-50%); z-index: 1060; background: var(--tinta); color: #fff;
+      border-radius: 14px; padding: 12px 18px; box-shadow: 0 10px 30px -10px rgba(0,0,0,.5); font-weight: 800; text-align: center;
+      max-width: calc(100% - 32px); }
+    .toast-venta .grande { color: var(--miel); font-size: 1.8rem; display: block; line-height: 1.1; }
+    @media (max-width: 991.98px) {
+      #seccionVentas { padding-bottom: 84px; }                 /* espacio para la barra fija */
+      .scan-sticky { position: sticky; top: 0; z-index: 1020; }
+      .carrito-scroll { min-height: 180px; max-height: 52vh; }
+      .total-box #totalText { font-size: 2.6rem; }
+      /* Botones sin código: una sola fila que se desliza de lado */
+      #gridRapidos { grid-auto-flow: column; grid-auto-columns: 104px; grid-template-columns: none; overflow-x: auto; padding-bottom: 4px; }
+      #gridRapidos.editando { grid-auto-flow: row; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); grid-auto-columns: auto; }
+      .btn-rapido { min-height: 72px; }
+    }
+    @media (max-width: 575.98px) {
+      .cart-table th, .cart-table td { padding: .45rem .3rem; font-size: .9rem; }
+      .cart-table th:nth-child(2) { width: auto !important; }
+      .cart-table .btn-qty { width: 30px; height: 30px; padding: 0; }
+      .cart-table td:last-child .btn { padding: .2rem .4rem; }
+      .precio-pendiente { width: 70px; }
+    }
+
     /* Botones sin código */
     .grid-rapidos { display: grid; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: 8px; }
     .btn-rapido { background: #fff; border: 2px solid #F3DE9C; border-radius: 14px; padding: 8px 6px; min-height: 84px;
@@ -263,18 +296,37 @@
     <div id="seccionVentas" class="seccion">
       <div class="row g-3">
         <div class="col-lg-8">
-          <div class="card p-3 mb-3">
-            <div class="input-group input-group-lg">
-              <span class="input-group-text"><i class="bi bi-upc-scan fs-4 text-primary"></i></span>
-              <input type="text" id="barcodeInput" class="form-control" placeholder="Escanea con la pistola o teclea el código..." autofocus />
-              <button class="btn btn-outline-primary" id="btnCamaraCaja"><i class="bi bi-camera-fill me-1"></i> Cámara</button>
+          <!-- Barra de escaneo (compacta y pegada arriba en tablet/celular) -->
+          <div class="card p-2 mb-2 scan-sticky">
+            <div class="input-group">
+              <span class="input-group-text"><i class="bi bi-upc-scan text-primary"></i></span>
+              <input type="text" id="barcodeInput" class="form-control fw-bold" placeholder="Escanea o teclea el código…" autocomplete="off" autofocus />
+              <button class="btn btn-outline-primary" id="btnCamaraCaja" title="Escanear con la cámara"><i class="bi bi-camera-fill"></i><span class="d-none d-md-inline ms-1">Cámara</span></button>
             </div>
             <div id="readerCaja" class="mt-2" style="display: none; border-radius: 12px; overflow: hidden;"></div>
-            <div id="scanStatus" class="form-text text-secondary mt-2">Listo para leer códigos.</div>
+            <div id="scanStatus" class="small text-secondary mt-1 px-1 text-truncate">Listo para leer códigos.</div>
+          </div>
+
+          <!-- Carrito (lo último que pasaste sale hasta arriba) -->
+          <div class="card mb-3">
+            <div class="table-responsive carrito-scroll">
+              <table class="table table-hover cart-table mb-0">
+                <thead class="table-light">
+                  <tr>
+                    <th>Producto</th>
+                    <th class="text-center" style="width: 130px;">Cant.</th>
+                    <th class="text-end">Precio</th>
+                    <th class="text-end d-none d-sm-table-cell">Subtotal</th>
+                    <th class="text-center" style="width: 50px;"></th>
+                  </tr>
+                </thead>
+                <tbody id="cartItems"></tbody>
+              </table>
+            </div>
           </div>
 
           <!-- BOTONES SIN CÓDIGO -->
-          <div class="card p-3 mb-3">
+          <div class="card p-3 mb-3" id="cardRapidos">
             <div class="d-flex justify-content-between align-items-center mb-2">
               <h6 class="fw-bold mb-0"><i class="bi bi-lightning-charge-fill text-primary me-1"></i>Sin código</h6>
               <button id="btnEditarRapidos" class="btn btn-sm btn-outline-primary"><i class="bi bi-gear me-1"></i>Editar</button>
@@ -337,26 +389,9 @@
               </div>
             </form>
           </div>
-
-          <div class="card">
-            <div class="table-responsive" style="min-height: 380px; max-height: 480px;">
-              <table class="table table-hover cart-table mb-0">
-                <thead class="table-light">
-                  <tr>
-                    <th>Producto</th>
-                    <th class="text-center" style="width: 140px;">Cant.</th>
-                    <th class="text-end">Precio</th>
-                    <th class="text-end">Subtotal</th>
-                    <th class="text-center" style="width: 60px;"></th>
-                  </tr>
-                </thead>
-                <tbody id="cartItems"></tbody>
-              </table>
-            </div>
-          </div>
         </div>
 
-        <div class="col-lg-4">
+        <div class="col-lg-4" id="panelCobro">
           <div class="card p-4 pb-5 mb-3 total-box text-center">
             <div class="fs-6 text-uppercase fw-bold opacity-75" style="letter-spacing: .08em;">Total a cobrar</div>
             <div class="display-3 fw-bold my-2" id="totalText">$0.00</div>
@@ -388,6 +423,15 @@
             <div id="deshacerVenta" class="text-center mt-2 small"></div>
           </div>
         </div>
+      </div>
+
+      <!-- Barra fija abajo (solo tablet y celular): total siempre visible -->
+      <div class="barra-cobro d-lg-none" id="barraCobro">
+        <div>
+          <div class="small opacity-75 lh-1">Total · <span id="barraPiezas">0 pzas</span></div>
+          <div class="fs-3 fw-bold lh-1 mt-1" id="barraTotal">$0.00</div>
+        </div>
+        <button class="btn btn-primary btn-lg fw-bold px-4" id="btnIrCobrar" disabled><i class="bi bi-cash-coin me-1"></i>Cobrar</button>
       </div>
     </div>
 
@@ -627,11 +671,13 @@
                 <option value="todos">Todos</option>
                 <option value="bajo">Stock bajo</option>
                 <option value="sinmargen">Ganancia baja (&lt;15%)</option>
+                <option value="revisar">Por revisar (vendidos sin registrar)</option>
               </select>
               <select id="filtroProveedorCat" class="form-select form-select-sm" style="width: auto;">
                 <option value="">Todos los proveedores</option>
               </select>
             </div>
+            <div id="avisoPendientes"></div>
             <input type="search" id="buscarProducto" class="form-control mb-2" placeholder="Buscar por nombre o código..." />
             <div class="small text-secondary mb-2">Puedes cambiar <b>precio</b> y <b>stock</b> directo en la tabla; se guarda solo. Para lo demás usa <i class="bi bi-pencil"></i>.</div>
             <div class="table-responsive" style="max-height: 620px;">
