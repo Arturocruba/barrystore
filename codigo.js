@@ -96,7 +96,7 @@ function abrirTab(idSeccion) {
     b.className = `tab-btn btn ${b.dataset.tab === idSeccion ? "btn-primary" : "btn-outline-primary"} fw-bold px-3`;
   });
   if (idSeccion === "seccionVentas") resetFocus();
-  if (idSeccion === "seccionCatalogo") { if (!tactil) $("codigoInput").focus(); cargarListaCatalogo(); }  if (idSeccion === "seccionPrecios") { cargarListaProductos(); cargarFeedPrecios(); }
+  if (idSeccion === "seccionCatalogo") { cargarListaCatalogo(); }
   if (idSeccion === "seccionReporte") cargarReporte();
   if (idSeccion === "seccionProveedores") cargarPanelProveedores();
 }
