@@ -106,6 +106,8 @@ function abrirTab(idSeccion) {
 // 1. COBRO Y VENTAS (POS)
 // ==============================================
 let carrito = [];
+let ultimaClave = "";          // para resaltar lo último que se pasó
+let margenPromedio = 0.30;     // ganancia promedio del catálogo (se calcula sola)
 const barcodeInput = $("barcodeInput");
 const scanStatus = $("scanStatus");
 const cartItems = $("cartItems");
@@ -113,26 +115,41 @@ const pagoInput = $("pagoInput");
 const cambioText = $("cambioText");
 const btnCobrar = $("btnCobrar");
 
-function resetFocus() {
+// En tablet/celular no se fuerza el cursor al escáner (si no, el teclado tapa la pantalla).
+// Si escanean con pistola, el cursor sí se queda ahí.
+const tactil = window.matchMedia && matchMedia("(pointer: coarse)").matches;
+function resetFocus(forzar = false) {
   barcodeInput.value = "";
-  barcodeInput.focus();
+  if (!tactil || forzar) barcodeInput.focus({ preventScroll: true });
 }
 
 barcodeInput.addEventListener("keydown", async (e) => {
   if (e.key === "Enter") {
     e.preventDefault();
     const code = barcodeInput.value.trim();
-    if (code) await agregarProductoPorCodigo(code);
+    barcodeInput.value = "";
+    if (code) await agregarProductoPorCodigo(code, true);
   }
 });
 
-async function agregarProductoPorCodigo(code) {
-  scanStatus.innerHTML = `<span class="text-primary">Buscando producto...</span>`;
+const claveItem = (i) => `${i.codigo}|${i.precio ?? "?"}`;
+
+async function agregarProductoPorCodigo(code, desdeEscaner = false) {
+  // ¿Ya está en el carrito como "no registrado"? Solo súmale una pieza
+  const pendiente = carrito.find(i => i.nuevo && i.codigo === code);
+  if (pendiente) {
+    pendiente.cantidad += 1;
+    moverAlFinal(pendiente);
+    actualizarVistaCarrito();
+    resetFocus(desdeEscaner);
+    return;
+  }
+
+  scanStatus.innerHTML = `<span class="text-primary">Buscando ${esc(code)}…</span>`;
   const { data: prod } = await db.from("productos").select("*").eq("codigo_barras", code).maybeSingle();
 
   if (!prod) {
-    scanStatus.innerHTML = `<span class="text-danger fw-bold">Producto no encontrado. Regístralo en "Catálogo".</span>`;
-    resetFocus();
+    agregarNoRegistrado(code);
     return;
   }
 
@@ -144,9 +161,93 @@ async function agregarProductoPorCodigo(code) {
     proveedor_id: prod.proveedor_id ?? null
   });
 
-  scanStatus.innerHTML = `<span class="text-success fw-bold">Agregado: ${esc(prod.nombre)}</span>`;
+  scanStatus.innerHTML = `<span class="text-success fw-bold"><i class="bi bi-check-circle-fill"></i> ${esc(prod.nombre)} · ${dinero(prod.precio_venta)}</span>`;
+  resetFocus(desdeEscaner);
+}
+
+// ---------- Producto que no está en el catálogo: NO detiene la venta ----------
+function agregarNoRegistrado(code) {
+  const item = { codigo: code, nombre: "Producto sin registrar", precio: null, costo: 0, proveedor_id: null,
+                 cantidad: 1, nuevo: true, foto: "" };
+  carrito.push(item);
+  ultimaClave = claveItem(item);
   actualizarVistaCarrito();
-  resetFocus();
+  scanStatus.innerHTML = `<span class="text-warning-emphasis fw-bold"><i class="bi bi-exclamation-triangle-fill"></i> No está registrado. Escribe su precio en el carrito y sigue cobrando.</span>`;
+  enfocarPrecioPendiente(code);
+
+  // Intenta averiguar qué es (Open Food Facts) sin hacer esperar a nadie
+  buscarNombreEnInternet(code).then(info => {
+    if (!info || !carrito.includes(item)) return;
+    item.nombre = info.nombre;
+    item.foto = info.foto;
+    const el = document.querySelector(`[data-nombre-de="${CSS.escape(code)}"]`);
+    if (el) el.textContent = info.nombre;
+  });
+}
+
+async function buscarNombreEnInternet(code) {
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 5000);
+    const res = await fetch(`https://world.openfoodfacts.org/api/v2/product/${encodeURIComponent(code)}.json?fields=product_name,product_name_es,brands,quantity,image_front_small_url`, { signal: ctrl.signal });
+    clearTimeout(t);
+    const j = await res.json();
+    if (j.status !== 1 || !j.product) return null;
+    const p = j.product;
+    const base = p.product_name_es || p.product_name;
+    if (!base) return null;
+    const marca = (p.brands || "").split(",")[0].trim();
+    const nombre = [marca && !base.toLowerCase().includes(marca.toLowerCase()) ? marca : "", base, p.quantity || ""].filter(Boolean).join(" ").trim();
+    return { nombre, foto: p.image_front_small_url || "" };
+  } catch (_) {
+    return null;
+  }
+}
+
+function enfocarPrecioPendiente(code) {
+  setTimeout(() => {
+    const inp = document.querySelector(`.precio-pendiente[data-codigo="${CSS.escape(code)}"]`);
+    if (inp) inp.focus({ preventScroll: false });
+  }, 30);
+}
+
+// Precio escrito directo en el renglón del producto no registrado
+cartItems.addEventListener("input", (e) => {
+  const inp = e.target.closest(".precio-pendiente");
+  if (!inp) return;
+  const item = carrito.find(i => i.nuevo && i.codigo === inp.dataset.codigo);
+  if (!item) return;
+  const v = parseFloat(inp.value);
+  item.precio = v > 0 ? v : null;
+  const sub = inp.closest("tr").querySelector(".subtotal-celda");
+  if (sub) sub.textContent = item.precio ? dinero(item.precio * item.cantidad) : "—";
+  actualizarTotales();
+});
+cartItems.addEventListener("keydown", (e) => {
+  const inp = e.target.closest(".precio-pendiente");
+  if (!inp || e.key !== "Enter") return;
+  e.preventDefault();
+  const valor = inp.value.trim();
+  // Si la pistola escribió un código aquí por accidente, se trata como escaneo
+  if (/^\d{8,}$/.test(valor)) {
+    const item = carrito.find(i => i.nuevo && i.codigo === inp.dataset.codigo);
+    if (item) item.precio = null;
+    inp.value = "";
+    actualizarTotales();
+    agregarProductoPorCodigo(valor, true);
+    return;
+  }
+  if (parseFloat(valor) > 0) { actualizarVistaCarrito(); resetFocus(true); }
+});
+cartItems.addEventListener("change", (e) => {
+  if (e.target.closest(".precio-pendiente")) actualizarVistaCarrito();
+});
+
+// ---------- Carrito ----------
+function moverAlFinal(item) {
+  const i = carrito.indexOf(item);
+  if (i > -1) { carrito.splice(i, 1); carrito.push(item); }
+  ultimaClave = claveItem(item);
 }
 
 window.cambiarCantidad = function (index, delta) {
@@ -160,7 +261,26 @@ window.eliminarFila = function (index) {
   actualizarVistaCarrito();
 };
 
-const totalCarrito = () => carrito.reduce((acc, i) => acc + i.precio * i.cantidad, 0);
+const totalCarrito = () => carrito.reduce((acc, i) => acc + (i.precio || 0) * i.cantidad, 0);
+const faltanPrecios = () => carrito.filter(i => i.nuevo && !(i.precio > 0)).length;
+
+function actualizarTotales() {
+  const total = totalCarrito();
+  const piezas = carrito.reduce((a, i) => a + i.cantidad, 0);
+  const faltan = faltanPrecios();
+  $("totalText").textContent = dinero(total);
+  $("itemCount").textContent = faltan ? `${piezas} pzas · falta ${faltan} precio${faltan > 1 ? "s" : ""}` : `${piezas} piezas`;
+  $("barraTotal").textContent = dinero(total);
+  $("barraPiezas").textContent = faltan ? `falta precio` : `${piezas} pza${piezas === 1 ? "" : "s"}`;
+
+  const vacio = carrito.length === 0;
+  btnCobrar.disabled = vacio || faltan > 0;
+  $("btnIrCobrar").disabled = vacio;
+  btnCobrar.innerHTML = faltan
+    ? `<i class="bi bi-exclamation-triangle-fill"></i> Falta poner ${faltan} precio${faltan > 1 ? "s" : ""}`
+    : `<i class="bi bi-check-circle-fill"></i> Completar Venta`;
+  calcularCambio();
+}
 
 function actualizarVistaCarrito() {
   if (carrito.length === 0) {
@@ -169,36 +289,47 @@ function actualizarVistaCarrito() {
         <svg class="abeja-xl"><use href="#abeja"/></svg>
         <div>El carrito está vacío. Escanea un artículo para comenzar.</div>
       </td></tr>`;
-    $("totalText").textContent = "$0.00";
-    $("itemCount").textContent = "0 artículos";
-    btnCobrar.disabled = true;
     pagoInput.value = "";
-    cambioText.textContent = "$0.00";
+    actualizarTotales();
     return;
   }
 
-  cartItems.innerHTML = carrito.map((item, idx) => `
-    <tr>
-      <td><strong>${esc(item.nombre)}</strong><br><small class="text-muted">${esc(item.codigo)}</small></td>
+  // Lo último que se pasó sale hasta arriba
+  const filas = [];
+  for (let idx = carrito.length - 1; idx >= 0; idx--) {
+    const item = carrito[idx];
+    const nueva = claveItem(item) === ultimaClave ? "fila-nueva" : "";
+    const sinPrecio = item.nuevo && !(item.precio > 0);
+    filas.push(`
+    <tr class="${nueva} ${item.nuevo ? "fila-sin-precio" : ""}">
+      <td>
+        <strong data-nombre-de="${esc(item.codigo)}">${esc(item.nombre)}</strong>
+        ${item.nuevo ? `<span class="badge text-bg-warning ms-1">No registrado</span>` : ""}
+        <br><small class="text-muted">${esc(item.codigo)}</small>
+      </td>
       <td class="text-center">
         <div class="d-flex align-items-center justify-content-center gap-1">
           <button class="btn btn-sm btn-outline-secondary btn-qty" onclick="cambiarCantidad(${idx}, -1)">-</button>
-          <span class="fw-bold px-2">${item.cantidad}</span>
+          <span class="fw-bold px-1">${item.cantidad}</span>
           <button class="btn btn-sm btn-outline-secondary btn-qty" onclick="cambiarCantidad(${idx}, 1)">+</button>
         </div>
       </td>
-      <td class="text-end">${dinero(item.precio)}</td>
-      <td class="text-end fw-bold">${dinero(item.precio * item.cantidad)}</td>
+      <td class="text-end">
+        ${item.nuevo
+          ? `<input type="number" step="0.5" inputmode="decimal" class="form-control form-control-sm text-end fw-bold precio-pendiente ${sinPrecio ? "border-warning" : ""}"
+               data-codigo="${esc(item.codigo)}" value="${item.precio ?? ""}" placeholder="$ precio">`
+          : dinero(item.precio)}
+      </td>
+      <td class="text-end fw-bold d-none d-sm-table-cell subtotal-celda">${item.precio ? dinero(item.precio * item.cantidad) : "—"}</td>
       <td class="text-center">
         <button class="btn btn-sm btn-outline-danger" onclick="eliminarFila(${idx})"><i class="bi bi-trash"></i></button>
       </td>
-    </tr>`).join("");
-
-  const total = totalCarrito();
-  $("totalText").textContent = dinero(total);
-  $("itemCount").textContent = `${carrito.reduce((a, i) => a + i.cantidad, 0)} piezas`;
-  btnCobrar.disabled = false;
-  calcularCambio();
+    </tr>`);
+  }
+  cartItems.innerHTML = filas.join("");
+  const scroll = cartItems.closest(".carrito-scroll");
+  if (scroll) scroll.scrollTop = 0;
+  actualizarTotales();
 }
 
 function calcularCambio() {
@@ -214,11 +345,45 @@ function calcularCambio() {
 }
 
 pagoInput.addEventListener("input", calcularCambio);
+pagoInput.addEventListener("keydown", (e) => { if (e.key === "Enter" && !btnCobrar.disabled) { e.preventDefault(); btnCobrar.click(); } });
 document.querySelectorAll(".quick-cash").forEach(btn => {
   btn.addEventListener("click", () => { pagoInput.value = btn.dataset.val; calcularCambio(); });
 });
 
+// Botón "Cobrar" de la barra de abajo (tablet/celular): baja a la parte de pago
+$("btnIrCobrar").addEventListener("click", () => {
+  if (faltanPrecios()) {
+    const p = carrito.find(i => i.nuevo && !(i.precio > 0));
+    enfocarPrecioPendiente(p.codigo);
+    return;
+  }
+  $("panelCobro").scrollIntoView({ behavior: "smooth", block: "start" });
+  setTimeout(() => pagoInput.focus({ preventScroll: true }), 350);
+});
+
+// Aviso de "venta cerrada" que no hay que cerrar con un clic
+function avisoVenta(html) {
+  document.querySelector(".toast-venta")?.remove();
+  const t = document.createElement("div");
+  t.className = "toast-venta";
+  t.innerHTML = html;
+  t.addEventListener("click", () => t.remove());
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 4500);
+}
+
+// Ganancia promedio del catálogo, para estimar el costo de lo que no está registrado
+async function calcularMargenPromedio() {
+  const { data } = await db.from("productos").select("costo_compra, precio_venta, es_rapido");
+  const m = (data || [])
+    .filter(p => !p.es_rapido && +p.costo_compra > 0 && +p.precio_venta > +p.costo_compra)
+    .map(p => +p.precio_venta / +p.costo_compra - 1)
+    .sort((a, b) => a - b);
+  if (m.length >= 3) margenPromedio = Math.min(0.8, Math.max(0.05, m[Math.floor(m.length / 2)]));
+}
+
 btnCobrar.addEventListener("click", async () => {
+  if (faltanPrecios()) { alert("Pon el precio de los productos no registrados."); return; }
   const total = totalCarrito();
   const pago = pagoInput.value === "" ? total : parseFloat(pagoInput.value) || 0;
   if (pago < total) {
@@ -231,6 +396,28 @@ btnCobrar.addEventListener("click", async () => {
   btnCobrar.innerHTML = "Guardando...";
 
   try {
+    // 1) Los productos no registrados se dan de alta solos (marcados "por revisar")
+    const nuevos = carrito.filter(i => i.nuevo);
+    if (nuevos.length) {
+      nuevos.forEach(i => i.costo = Math.round(i.precio / (1 + margenPromedio) * 100) / 100);
+      const vistos = new Set();
+      const altas = nuevos.filter(i => !vistos.has(i.codigo) && vistos.add(i.codigo)).map(i => ({
+        codigo_barras: i.codigo,
+        nombre: i.nombre === "Producto sin registrar" ? `Sin registrar ${i.codigo}` : i.nombre,
+        precio_venta: i.precio,
+        costo_compra: i.costo,
+        stock_actual: 0,
+        stock_minimo: 0,
+        foto_url: i.foto || "",
+        pendiente_revision: true,
+        updated_at: new Date().toISOString()
+      }));
+      const { error: errAlta } = await db.from("productos").upsert(altas, { onConflict: "codigo_barras", ignoreDuplicates: true });
+      if (errAlta) throw new Error(/pendiente_revision/.test(errAlta.message)
+        ? "Falta correr supabase_no_registrados.sql en Supabase." : errAlta.message);
+    }
+
+    // 2) La venta
     const { data: venta, error: errVenta } = await db.from("ventas").insert({
       total, monto_recibido: pago, cambio, metodo_pago: "efectivo"
     }).select().single();
@@ -252,14 +439,18 @@ btnCobrar.addEventListener("click", async () => {
       await db.rpc("descontar_stock", { p_codigo: item.codigo, p_cantidad: item.cantidad });
     }
 
-    alert(`¡Venta cerrada! Cambio a entregar: ${dinero(cambio)}`);
+    avisoVenta(`Venta cerrada · cambio<span class="grande">${dinero(cambio)}</span>`);
     ultimaVenta = { id: venta.id, total };
     mostrarDeshacer();
     carrito = [];
+    ultimaClave = "";
+    pagoInput.value = "";
+    if (nuevos.length) contarPendientes();
+    scanStatus.innerHTML = `<span class="text-secondary">Listo para la siguiente venta.</span>`;
+    window.scrollTo({ top: 0, behavior: "smooth" });
   } catch (err) {
     alert("Error al registrar venta: " + err.message);
   } finally {
-    btnCobrar.innerHTML = `<i class="bi bi-check-circle-fill"></i> Completar Venta`;
     actualizarVistaCarrito();
     resetFocus();
   }
@@ -555,7 +746,9 @@ codigoInput.addEventListener("keydown", (e) => {
   }
 });
 
+let productoCargadoPendiente = false;
 async function procesarCodigoCatalogo(codigo) {
+  productoCargadoPendiente = false;
   statusMsgCat.innerHTML = `<span class="text-primary"><i class="bi bi-hourglass-split"></i> Buscando producto...</span>`;
   const { data: localProd } = await db.from("productos").select("*").eq("codigo_barras", codigo).maybeSingle();
 
@@ -569,7 +762,10 @@ async function procesarCodigoCatalogo(codigo) {
     currentFotoUrl = localProd.foto_url || "";
     previewFoto.src = currentFotoUrl || FOTO_VACIA;
     mostrarMargen();
-    statusMsgCat.innerHTML = `<span class="text-success fw-bold"><i class="bi bi-check-circle"></i> Ya está en tu catálogo. Modifica lo que necesites.</span>`;
+    productoCargadoPendiente = !!localProd.pendiente_revision;
+    statusMsgCat.innerHTML = productoCargadoPendiente
+      ? `<span class="text-warning-emphasis fw-bold"><i class="bi bi-exclamation-triangle-fill"></i> Se vendió sin estar registrado: revisa el nombre, el <b>costo</b> (es estimado) y el proveedor, y dale Guardar.</span>`
+      : `<span class="text-success fw-bold"><i class="bi bi-check-circle"></i> Ya está en tu catálogo. Modifica lo que necesites.</span>`;
     return;
   }
 
@@ -616,6 +812,7 @@ btnGuardarProd.addEventListener("click", async () => {
     stock_minimo: parseFloat(stockMinInput.value) || 0,
     proveedor_id: idProv(proveedorSelect.value),
     foto_url: currentFotoUrl,
+    ...(productoCargadoPendiente ? { pendiente_revision: false } : {}),
     updated_at: new Date().toISOString()
   });
 
@@ -628,7 +825,9 @@ btnGuardarProd.addEventListener("click", async () => {
     statusMsgCat.innerHTML = `<span class="text-success fw-bold"><i class="bi bi-check2-all"></i> ¡Guardado! Listo para el siguiente.</span>`;
     limpiarFormularioCat(true);
     codigoInput.focus();
+    productoCargadoPendiente = false;
     cargarListaCatalogo();
+    contarPendientes();
   }
 });
 
@@ -650,6 +849,15 @@ async function cargarListaCatalogo() {
   }
   productosLista = (data || []).filter(p => !p.es_rapido); // los botones sin código se editan desde Caja
   botonesCatalogo = (data || []).filter(p => p.es_rapido && !p.oculto);
+
+  // Productos que se vendieron sin estar registrados: cuántas piezas llevan
+  const pend = productosLista.filter(p => p.pendiente_revision);
+  vendidosPendientes = {};
+  if (pend.length) {
+    const { data: det } = await db.from("detalle_ventas").select("codigo_barras, cantidad").in("codigo_barras", pend.map(p => p.codigo_barras));
+    (det || []).forEach(d => vendidosPendientes[d.codigo_barras] = (vendidosPendientes[d.codigo_barras] || 0) + (+d.cantidad || 0));
+  }
+  pintarAvisoPendientes(pend.length);
   renderListaCatalogo();
 }
 
@@ -660,6 +868,7 @@ function renderListaCatalogo() {
   let lista = productosLista.filter(p =>
     !q || (p.nombre || "").toLowerCase().includes(q) || (p.codigo_barras || "").includes(q));
 
+  if (filtro === "revisar") lista = lista.filter(p => p.pendiente_revision);
   if (filtro === "bajo") lista = lista.filter(p => (+p.stock_actual || 0) <= (+(p.stock_minimo ?? 5)));
   if (filtro === "sinmargen") lista = lista.filter(p => {
     const c = +p.costo_compra || 0, pr = +p.precio_venta || 0;
@@ -688,6 +897,7 @@ function renderListaCatalogo() {
       <tr>
         <td>
           <div class="fw-semibold">${esc(p.nombre)}</div>
+          ${p.pendiente_revision ? `<span class="badge text-bg-warning" style="font-size:.66rem">Por revisar · vendido ${vendidosPendientes[p.codigo_barras] || 0} pz</span>` : ""}
           <div class="small text-muted font-monospace">${cod}</div>
           <select class="form-select form-select-sm edit-prov" data-codigo="${cod}" title="Proveedor">${opcionesProveedor(p.proveedor_id, "Sin proveedor")}</select>
         </td>
@@ -1035,6 +1245,8 @@ function mostrarSegunSesion(session) {
       appIniciada = true;
       cargarProveedores();
       cargarRapidos();
+      calcularMargenPromedio();
+      contarPendientes();
       abrirTab("seccionVentas");
     }
   } else {
@@ -1264,9 +1476,10 @@ function pintarTickets(lista, conFecha) {
 // 8. CARRITO: agregar (junta piezas iguales)
 // ==============================================
 function agregarItem({ codigo, nombre, precio, costo, proveedor_id = null }) {
-  const item = carrito.find(i => i.codigo === codigo && i.precio === precio);
+  let item = carrito.find(i => !i.nuevo && i.codigo === codigo && i.precio === precio);
   if (item) item.cantidad += 1;
-  else carrito.push({ codigo, nombre, precio, costo: costo || 0, proveedor_id, cantidad: 1 });
+  else { item = { codigo, nombre, precio, costo: costo || 0, proveedor_id, cantidad: 1 }; carrito.push(item); }
+  moverAlFinal(item); // lo último que pasaste sale hasta arriba del carrito
   actualizarVistaCarrito();
 }
 
@@ -1760,4 +1973,35 @@ function pintarPorProveedor(lista) {
       <td>Total</td><td class="text-center">${t.p}</td><td class="text-end">${dinero(t.v)}</td>
       <td class="text-end">${dinero(t.c)}</td><td class="text-end text-success">${dinero(t.u)}</td>
     </tr>` : "");
+}
+
+
+// ==============================================
+// 12. PRODUCTOS VENDIDOS SIN ESTAR REGISTRADOS
+// ==============================================
+let vendidosPendientes = {};
+
+async function contarPendientes() {
+  const { count, error } = await db.from("productos").select("codigo_barras", { count: "exact", head: true }).eq("pendiente_revision", true);
+  const n = error ? 0 : (count || 0);
+  const tab = document.querySelector('.tab-btn[data-tab="seccionCatalogo"]');
+  if (!tab) return;
+  tab.querySelector(".badge-pend")?.remove();
+  if (n) tab.insertAdjacentHTML("beforeend", ` <span class="badge rounded-pill text-bg-danger badge-pend" title="Productos por revisar">${n}</span>`);
+}
+
+function pintarAvisoPendientes(n) {
+  const el = $("avisoPendientes");
+  if (!el) return;
+  el.innerHTML = n ? `
+    <div class="alert alert-warning py-2 px-3 small d-flex flex-wrap justify-content-between align-items-center gap-2 mb-2">
+      <span><i class="bi bi-exclamation-triangle-fill me-1"></i><b>${n} producto${n > 1 ? "s" : ""}</b> se vendi${n > 1 ? "eron" : "ó"} sin estar registrado${n > 1 ? "s" : ""}. El costo es estimado: revísalos y guárdalos.</span>
+      <button class="btn btn-sm btn-warning fw-bold" id="btnVerPendientes">Revisar</button>
+    </div>` : "";
+  $("btnVerPendientes")?.addEventListener("click", () => {
+    $("filtroProductos").value = "revisar";
+    $("buscarProducto").value = "";
+    $("filtroProveedorCat").value = "";
+    renderListaCatalogo();
+  });
 }
